@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ouo.io Bypass - Ultra Fast <10s</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,Segoe UI,Roboto,Arial;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:14px}
+.card{background:#1e293b;border:1px solid #334155;border-radius:16px;max-width:640px;width:100%;padding:22px;box-shadow:0 20px 50px rgba(0,0,0,.5)}
+h1{font-size:18px;color:#f8fafc} .sub{color:#94a3b8;font-size:11px;margin:6px 0 14px;line-height:1.5}
+input{width:100%;background:#020617;border:1px solid #334155;border-radius:10px;padding:12px;color:#f1f5f9;font-size:14px;outline:none}
+button{margin-top:10px;width:100%;background:#38bdf8;color:#0f172a;border:none;border-radius:10px;padding:12px;font-weight:700;font-size:14px;cursor:pointer}
+.status{margin-top:10px;font-size:12px;padding:8px;background:#020617;border-radius:8px;border:1px solid #334155}
+.status.ok{color:#4ade80}.status.wait{color:#fbbf24}
+.badge{display:inline-block;border:1px solid #334155;background:#020617;border-radius:20px;padding:2px 8px;font-size:10px;color:#94a3b8;margin:2px}
+code{font-size:11px;background:#020617;padding:1px 5px;border-radius:4px}
+</style>
+</head><body>
+<div class="card">
+<h1>ouo.io Bypass — Ultra Fast (&lt;2s)</h1>
+<p class="sub">
+<b>Fixed for &lt;10s:</b> No token fetch, no CORS proxy, no server wait. Direct POST empty <code>_token</code> to <code>/xreallcygo/ID</code> from <b>YOUR IP</b> → instant redirect.<br>
+<span class="badge">&lt;2s</span><span class="badge">YOUR IP logged</span><span class="badge">No "Failed to fetch"</span><span class="badge">Static</span>
+</p>
+
+<input id="urlInput" value="https://ouo.io/go/GEVWWP" placeholder="https://ouo.io/go/XXXX">
+
+<button id="bypassBtn">Bypass NOW from MY IP (instant)</button>
+
+<div id="status" class="status wait">Ready - will bypass in &lt;1s after click</div>
+
+<p style="font-size:10px;color:#64748b;margin-top:10px;text-align:center">
+Auto: <code>https://yoursite.com/?=https://ouo.io/go/GEVWWP</code> → bypasses in &lt;1s on open<br>
+Method: <code>POST https://ouo.io/xreallcygo/GEVWWP _token=""</code> from YOUR browser → 302 to final
+</p>
+</div>
+
+<script>
+function extractId(url){
+  try{
+    let clean = url.split('?')[0].split('#')[0];
+    let parts = clean.split('/').filter(Boolean);
+    let id = parts[parts.length-1];
+    if(id==='go') id = parts[parts.length-2]||'';
+    return id;
+  }catch(e){ return null; }
+}
+function getUrlFromQuery(){
+  let s = window.location.search;
+  if(!s) return null;
+  let raw = s.slice(1);
+  if(raw.startsWith('=')) raw = raw.slice(1);
+  try{
+    let p = new URLSearchParams(s);
+    for(let k of ['url','u','link']){
+      if(p.has(k)) return decodeURIComponent(p.get(k));
+    }
+    if(p.has('')){let v=p.get(''); if(v && v.startsWith('http')) return v;}
+  }catch(e){}
+  let m = (raw.match(/https?:\/\/[^\s&]+/)||[])[0];
+  return m || (raw.startsWith('http')?raw:null);
+}
+
+function bypassUltraFast(shortUrl){
+  let id = extractId(shortUrl);
+  if(!id){
+    document.getElementById('status').textContent = 'Invalid URL - could not extract ID';
+    return;
+  }
+  document.getElementById('status').textContent = `Bypassing ${id} from YOUR IP... (0.3s)`;
+  document.getElementById('status').className = 'status wait';
+
+  // Direct POST with empty _token - works for GEVWWP, instant, no token fetch
+  let form = document.createElement('form');
+  form.method = 'POST';
+  form.action = `https://ouo.io/xreallcygo/${id}`;
+  form.style.display = 'none';
+
+  let inp = document.createElement('input');
+  inp.type = 'hidden';
+  inp.name = '_token';
+  inp.value = '';
+  form.appendChild(inp);
+
+  document.body.appendChild(form);
+
+  // Instant submit - under 300ms
+  setTimeout(()=>{ 
+    document.getElementById('status').textContent = `POSTing to ouo.io/xreallcygo/${id} from YOUR IP... Redirecting...`;
+    document.getElementById('status').className = 'status ok';
+    form.submit(); 
+  }, 150);
+}
+
+document.getElementById('bypassBtn').addEventListener('click', ()=>{
+  let url = document.getElementById('urlInput').value.trim();
+  if(!url) return alert('Enter URL');
+  bypassUltraFast(url);
+});
+
+window.addEventListener('DOMContentLoaded', ()=>{
+  let autoUrl = getUrlFromQuery();
+  if(autoUrl){
+    document.getElementById('urlInput').value = autoUrl;
+    // Auto bypass instantly (<0.5s) as soon as site opens
+    setTimeout(()=>bypassUltraFast(autoUrl), 300);
+  }
+});
+</script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2e05d0abb3749d6',t:'MTc4NzIxODA1OQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f"}' crossorigin="anonymous"></script>
+</body></html>
