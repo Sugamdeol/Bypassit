@@ -1,0 +1,31 @@
+# Render Blueprint - Single-file ouo.io bypass that logs from USER IP not Render IP
+# Deploy: Connect this repo to Render → Blueprint will auto-create service
+# Auto-bypass via: https://yourname.onrender.com/?=https://ouo.io/go/GEVWWP
+
+services:
+  - type: web
+    name: ouo-bypass-client-ip
+    runtime: python
+    # Use Python 3.11 for curl_cffi compatibility
+    buildCommand: pip install --upgrade pip && pip install flask curl_cffi beautifulsoup4 lxml
+    startCommand: python render_client_ip_bypass.py
+    # Render sets PORT env automatically (10000), our app reads os.environ.get("PORT", 8000)
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: FLASK_ENV
+        value: production
+    healthCheckPath: /
+    # Optional: auto-deploy on commit
+    autoDeploy: true
+
+# If you want static site version (render_bypass_index.html) instead:
+#  - type: web
+#    name: ouo-bypass-static
+#    runtime: static
+#    buildCommand: echo "static"
+#    staticPublishPath: ./
+#    routes:
+#      - type: rewrite
+#        source: /*
+#        destination: /render_bypass_index.html
