@@ -1,14 +1,16 @@
-# Render Blueprint - Single-file ouo.io bypass that logs from USER IP not Render IP
-# Deploy: Connect this repo to Render → Blueprint will auto-create service
+# Render Blueprint - FREE TIER optimized - Single-file ouo.io bypass that logs from USER IP
+# Deploy: Connect this repo to Render → Blueprint will auto-create service on FREE tier
 # Auto-bypass via: https://yourname.onrender.com/?=https://ouo.io/go/GEVWWP
 
 services:
   - type: web
     name: ouo-bypass-client-ip
     runtime: python
+    plan: free
+    region: singapore # Closest to India for low latency - use oregon if you want US
     # Use Python 3.11 for curl_cffi compatibility
     buildCommand: pip install --upgrade pip && pip install flask curl_cffi beautifulsoup4 lxml
-    startCommand: python render_client_ip_bypass.py
+    startCommand: python final_auto_no_setup.py
     # Render sets PORT env automatically (10000), our app reads os.environ.get("PORT", 8000)
     envVars:
       - key: PYTHON_VERSION
@@ -16,8 +18,11 @@ services:
       - key: FLASK_ENV
         value: production
     healthCheckPath: /
-    # Optional: auto-deploy on commit
     autoDeploy: true
+    # Free tier notes:
+    # - Spins down after 15min inactivity, cold start ~30s on next request
+    # - 750 hours/month free, enough for 1 service
+    # - No credit card required for free tier
 
 # If you want static site version (render_bypass_index.html) instead:
 #  - type: web
