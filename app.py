@@ -21,7 +21,7 @@ HTML_PAGE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ouo.io Render Live Bypass</title>
+    <title>ouo.io Live Auto-Clicker & Bypass</title>
     <style>
         *{box-sizing:border-box;margin:0;padding:0}
         body{font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -55,24 +55,24 @@ HTML_PAGE = """
 </head>
 <body>
     <div class="card">
-        <h1><span class="live-indicator"></span>ouo.io Render Live Bypass</h1>
-        <p class="sub">Hosted on Render. Use auto-check mode to loop and test status changes continuously.</p>
+        <h1><span class="live-indicator"></span>ouo.io Auto-Clicker & Bypass</h1>
+        <p class="sub">Forces an active server click request on every check / opening sequence.</p>
         <div>
             <label>Shortened URL</label>
             <input id="urlInput" value="https://ouo.io/go/GEVWWP" placeholder="https://ouo.io/XXXXXX">
             <div class="controls">
-                <button id="bypassBtn">Bypass Once</button>
-                <button id="autoBtn" class="secondary">Start Auto-Check (Every 10s)</button>
+                <button id="bypassBtn">Trigger Click & Bypass</button>
+                <button id="autoBtn" class="secondary">Start Auto-Click Loop (Every 10s)</button>
             </div>
         </div>
         <div id="result" class="result">
             <div class="row"><div class="k">Original URL</div><div class="v" id="orig"></div></div>
-            <div class="row"><div class="k">Working Entry</div><div class="v" id="working"></div></div>
+            <div class="row"><div class="k">Working Entry Triggered</div><div class="v" id="working"></div></div>
             <div class="row"><div class="k">Resolved / Final URL <span id="timer" class="class-timer"></span></div><div class="v" id="final"></div></div>
-            <div class="row"><div class="k">Status</div><div class="v" id="status"></div></div>
+            <div class="row"><div class="k">Status & Click Log</div><div class="v" id="status"></div></div>
             <details><summary>Debug Log</summary><pre id="log"></pre></details>
         </div>
-        <p class="small">Powered by curl_cffi & Render Cloud Hosting.</p>
+        <p class="small">Powered by curl_cffi universal browser impersonation.</p>
     </div>
 
     <script>
@@ -93,7 +93,7 @@ HTML_PAGE = """
             if(!url) return;
             if(!isAuto) {
                 btn.disabled = true;
-                btn.textContent = 'Bypassing...';
+                btn.textContent = 'Sending Click & Bypassing...';
             }
             try {
                 const res = await fetch('/api/bypass', {
@@ -119,7 +119,7 @@ HTML_PAGE = """
             } finally {
                 if(!isAuto) {
                     btn.disabled = false;
-                    btn.textContent = 'Bypass Once';
+                    btn.textContent = 'Trigger Click & Bypass';
                 }
             }
         }
@@ -130,18 +130,18 @@ HTML_PAGE = """
             if(autoInterval) {
                 clearInterval(autoInterval);
                 autoInterval = null;
-                autoBtn.textContent = 'Start Auto-Check (Every 10s)';
+                autoBtn.textContent = 'Start Auto-Click Loop (Every 10s)';
                 autoBtn.style.background = '#334155';
                 timerEl.textContent = '';
             } else {
                 performBypass(true);
                 let countdown = 10;
-                autoBtn.textContent = 'Stop Auto-Check';
+                autoBtn.textContent = 'Stop Auto-Click Loop';
                 autoBtn.style.background = '#ef4444';
                 
                 autoInterval = setInterval(() => {
                     countdown--;
-                    timerEl.textContent = `Next check in ${countdown}s`;
+                    timerEl.textContent = `Next click in ${countdown}s`;
                     if(countdown <= 0) {
                         performBypass(true);
                         countdown = 10;
@@ -190,17 +190,20 @@ def bypass_ouo_single(original_url):
             'upgrade-insecure-requests': '1',
         })
         
-        for imp in ["safari18_0", "safari15_5", "chrome133a"]:
-            d(f"Trying impersonation {imp}...")
+        # Updated to use generic supported rolling versions ("chrome", "safari")
+        for imp in ["chrome", "safari"]:
+            d(f"Sending fresh click request via impersonation '{imp}'...")
             try:
                 r = client.get(working_entry, impersonate=imp, timeout=15)
                 is_cf = "Just a moment" in r.text
                 if is_cf or r.status_code != 200:
+                    d(f"    -> Blocked or status {r.status_code}, trying next profile")
                     continue
                     
                 soup = BeautifulSoup(r.text, 'lxml')
                 token_el = soup.find('input', {'name':'_token'})
                 if not token_el:
+                    d("    -> Token not found, trying next profile")
                     continue
                 
                 _token = token_el.get('value')
@@ -221,11 +224,12 @@ def bypass_ouo_single(original_url):
                 loc = r3.headers.get('Location')
                 
                 if loc:
+                    d(f"SUCCESS: Click verified and processed via '{imp}'")
                     return {
                         "original_url": original_url,
                         "working_entry": working_entry,
                         "final_url": loc,
-                        "status": f"SUCCESS via {imp} at {datetime.datetime.now().strftime('%H:%M:%S')}",
+                        "status": f"CLICK SENT & RESOLVED via '{imp}' at {datetime.datetime.now().strftime('%H:%M:%S')}",
                         "debug_log": "\n".join(debug)
                     }
             except Exception as e:
@@ -235,7 +239,7 @@ def bypass_ouo_single(original_url):
             "original_url": original_url,
             "working_entry": working_entry,
             "final_url": None,
-            "status": f"FAILED (Cloudflare or token challenge block) at {datetime.datetime.now().strftime('%H:%M:%S')}",
+            "status": f"CLICK SENT, BUT FAILED REDIRECT (Cloudflare Block) at {datetime.datetime.now().strftime('%H:%M:%S')}",
             "debug_log": "\n".join(debug)
         }
     except Exception as e:
