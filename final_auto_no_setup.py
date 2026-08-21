@@ -99,27 +99,69 @@ function extractId(url){
   }catch(e){ return null; }
 }
 
-// Fire the ouo.io click FROM THE VISITOR'S OWN BROWSER (their IP) via a
-// hidden iframe. This is the request ouo.io counts in its dashboard.
-// No page navigation happens - the view is just logged.
-function fireOuoClick(url){
+function hostOf(url){
+  try{ return new URL(url).host; }catch(e){ return 'ouo.io'; }
+}
+
+// Fire the ouo.io click FROM THE VISITOR'S OWN BROWSER (their IP).
+// This replicates the real click sequence:
+//   1. load the ouo.io interstitial in a hidden iframe (real visit: passes
+//      Cloudflare + Turnstile, sets ouo session cookies)
+//   2. wait for the page to settle, then submit the click POST
+//      (ouo.io/xreallcygo/ID) from the same browser - the request ouo.io
+//      counts in its dashboard
+//   3. a no-cors fetch backup in case form submission is blocked by an
+//      outer sandboxed iframe (e.g. a preview shell)
+// The visitor's page NEVER navigates - no redirect, just the logged view.
+function fireOuoClick(url, onStage){
   return new Promise((resolve, reject)=>{
     let id = extractId(url);
     if(!id){ return reject(new Error('Could not extract ouo ID from ' + url)); }
-    let iframe = document.createElement('iframe');
-    iframe.name = 'ouoclick';
-    iframe.style.display = 'none';
-    document.body.appendChild(iframe);
-    let form = document.createElement('form');
-    form.method = 'POST';
-    form.action = `https://ouo.io/xreallcygo/${id}`;
-    form.target = 'ouoclick';
-    form.innerHTML = '<input type="hidden" name="_token" value="">';
-    document.body.appendChild(form);
-    form.submit();
-    // ouo.io responds with a 302 inside the iframe - we never navigate the page
-    setTimeout(()=>resolve(id), 2500);
-    setTimeout(()=>{ iframe.remove(); form.remove(); }, 4000);
+    let host = hostOf(url);
+    let xUrl = `https://${host}/xreallcygo/${id}`;
+
+    const stage = (s)=>{ if(onStage) onStage(s); };
+
+    // Step 1: real visit to the interstitial in a hidden iframe
+    stage('loading ouo page (real visit)...');
+    let visit = document.createElement('iframe');
+    visit.name = 'ouovisit';
+    visit.style.cssText = 'display:none;width:1px;height:1px;position:absolute;';
+    visit.src = `https://${host}/${id}`;
+    document.body.appendChild(visit);
+
+    // Step 2: after the page settles, send the click POST from this browser
+    setTimeout(()=>{
+      stage('sending click POST from your IP...');
+      let sink = document.createElement('iframe');
+      sink.name = 'ouoclick';
+      sink.style.cssText = 'display:none;width:1px;height:1px;position:absolute;';
+      document.body.appendChild(sink);
+
+      let form = document.createElement('form');
+      form.method = 'POST';
+      form.action = xUrl;
+      form.target = 'ouoclick';
+      form.innerHTML = '<input type="hidden" name="_token" value="">';
+      document.body.appendChild(form);
+      try{ form.submit(); }catch(e){}
+
+      // Step 3: backup POST via no-cors fetch (works even if an outer
+      // sandboxed iframe blocks form submission)
+      setTimeout(()=>{
+        try{
+          fetch(xUrl, {
+            method:'POST',
+            mode:'no-cors',
+            headers:{'Content-Type':'application/x-www-form-urlencoded'},
+            body:'_token='
+          }).catch(()=>{});
+        }catch(e){}
+
+        setTimeout(()=>{ stage('done'); resolve(id); }, 1200);
+        setTimeout(()=>{ visit.remove(); sink.remove(); form.remove(); }, 5000);
+      }, 2500);
+    }, 6000);
   });
 }
 
@@ -134,12 +176,13 @@ function logView(url, reason){
 
 function runAuto(url){
   document.getElementById('orig').textContent = url;
+  document.getElementById('loader').style.display = 'block';
   document.getElementById('status').textContent = `Logging view for ${url} from YOUR IP (${USER_IP})...`;
-  fireOuoClick(url)
+  fireOuoClick(url, (s)=>document.getElementById('status').textContent = `Step: ${s}`)
     .then((id)=>{
       document.getElementById('loader').style.display = 'none';
-      document.getElementById('status').textContent = `View logged in ouo.io for link ${id} from YOUR IP. No redirect.`;
-      document.getElementById('info').textContent = `Click sent to ouo.io/xreallcygo/${id} from your browser (your IP). Your view is logged - you were not redirected anywhere.`;
+      document.getElementById('status').textContent = `View logged in ouo.io for link ${id} from YOUR IP. No redirect - you stay on this page.`;
+      document.getElementById('info').textContent = `Real visit + click POST sent to ouo.io from your browser (${USER_IP}).`;
       logView(url, 'auto');
     })
     .catch((e)=>{
@@ -153,10 +196,23 @@ window.addEventListener('DOMContentLoaded', ()=>{
   if(!url) url = DEFAULT_URL;
   document.getElementById('urlInput').value = url;
   document.getElementById('visitor').textContent = 'Your IP: ' + USER_IP + (NEW_IP ? ' (NEW)' : ' (already logged before)');
+
+  // Warn if this page is embedded inside another site's iframe (preview
+  // shells) - form submissions to ouo.io may be sandboxed there.
+  try{
+    if(window.self !== window.top){
+      let n = document.createElement('p');
+      n.style.cssText = 'font-size:10px;color:#fbbf24;margin-top:8px';
+      n.textContent = 'Embedded in a preview iframe - if the view does not count in ouo.io, open this site directly in a new browser tab.';
+      document.querySelector('.card').appendChild(n);
+    }
+  }catch(e){}
+
   document.getElementById('manualBtn').addEventListener('click', ()=>{
     let u = document.getElementById('urlInput').value.trim();
+    document.getElementById('orig').textContent = u;
     document.getElementById('loader').style.display = 'block';
-    fireOuoClick(u)
+    fireOuoClick(u, (s)=>document.getElementById('status').textContent = `Step: ${s}`)
       .then((id)=>{
         document.getElementById('loader').style.display = 'none';
         document.getElementById('status').textContent = `View logged in ouo.io for ${id} from YOUR IP. No redirect.`;
