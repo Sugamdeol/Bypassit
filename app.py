@@ -271,8 +271,8 @@ def bypass_ouo_single(original_url):
             'upgrade-insecure-requests': '1',
         })
 
-        # Updated to use generic supported rolling versions ("chrome", "safari")
-        for imp in ["chrome", "safari"]:
+        # Real browser impersonation profiles supported by curl-cffi 0.7.4
+        for imp in ["chrome124", "chrome120", "safari17_0", "safari15_5", "edge101", "chrome110"]:
             d(f"Sending fresh click request via impersonation '{imp}'...")
             try:
                 r = client.get(working_entry, impersonate=imp, timeout=15)

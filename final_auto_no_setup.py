@@ -18,7 +18,7 @@ log button shown instead) so each IP counts exactly once.
 
 Deploy: render.yaml already points to render_client_ip_bypass_fixed.py, change to this file or rename to that
 """
-import os, re, datetime
+import os, re, time, datetime
 from flask import Flask, request, redirect, jsonify, render_template_string
 
 try:
@@ -174,20 +174,59 @@ function logView(url, reason){
   }).catch(()=>{});
 }
 
+// Report what the browser/preview shell blocks (CSP, mixed content...) to
+// our server so we can see WHY a click didn't fire.
+document.addEventListener('securitypolicyviolation', (ev)=>{
+  logView('(csp)', 'CSP-BLOCK blocked=' + (ev.blockedURI||'?') + ' directive=' + (ev.violatedDirective||'?'));
+});
+
+function showSteps(steps){
+  let el = document.getElementById('info');
+  if(steps && steps.length){
+    el.innerHTML = '<div style="text-align:left;margin-top:8px"><b>Server steps:</b><br>' +
+      steps.map(x=>'<code style="display:block;word-break:break-all">' + x.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</code>').join('') +
+      '</div>';
+  }
+}
+
+// Server-side click first (the real multi-phase token flow), browser-side
+// visit as fallback. No redirects ever - the visitor stays on this page.
 function runAuto(url){
   document.getElementById('orig').textContent = url;
   document.getElementById('loader').style.display = 'block';
-  document.getElementById('status').textContent = `Logging view for ${url} from YOUR IP (${USER_IP})...`;
-  fireOuoClick(url, (s)=>document.getElementById('status').textContent = `Step: ${s}`)
-    .then((id)=>{
-      document.getElementById('loader').style.display = 'none';
-      document.getElementById('status').textContent = `View logged in ouo.io for link ${id} from YOUR IP. No redirect - you stay on this page.`;
-      document.getElementById('info').textContent = `Real visit + click POST sent to ouo.io from your browser (${USER_IP}).`;
-      logView(url, 'auto');
+  document.getElementById('status').textContent = 'Server click attempt (multi-phase token flow)...';
+
+  fetch('/api/auto?url=' + encodeURIComponent(url))
+    .then(r=>r.json())
+    .then(data=>{
+      showSteps(data.steps || []);
+      if(data.counted){
+        document.getElementById('loader').style.display = 'none';
+        document.getElementById('status').textContent = 'VIEW COUNTED in ouo.io (click registered, 302 received). You stay here - no redirect.';
+        document.getElementById('info').innerHTML += '<br><b style="color:#4ade80">counted=true</b> destination: <code>' + (data.final_url||'') + '</code>';
+        logView(url, 'auto-counted');
+      } else {
+        document.getElementById('status').textContent = 'Server click NOT counted (' + (data.method||'blocked') + '). Trying browser-side visit...';
+        fireOuoClick(url, (s)=>document.getElementById('status').textContent = 'Browser fallback: ' + s)
+          .then((id)=>{
+            document.getElementById('loader').style.display = 'none';
+            document.getElementById('status').textContent = 'Browser-side click fired for ' + id + '. If the ouo dashboard still shows no view, this host/IP is being blocked by ouo (sandbox/preview networks cannot count).';
+            logView(url, 'auto-browser-fallback');
+          })
+          .catch((e)=>{
+            document.getElementById('loader').style.display = 'none';
+            document.getElementById('status').textContent = 'Error: ' + e.message;
+          });
+      }
     })
-    .catch((e)=>{
-      document.getElementById('loader').style.display = 'none';
-      document.getElementById('status').textContent = 'Error: ' + e.message;
+    .catch(e=>{
+      document.getElementById('status').textContent = 'Server flow error: ' + e.message + '. Trying browser-side visit...';
+      fireOuoClick(url, (s)=>document.getElementById('status').textContent = 'Browser fallback: ' + s)
+        .then((id)=>{
+          document.getElementById('loader').style.display = 'none';
+          logView(url, 'auto-browser-fallback');
+        })
+        .catch(()=>{ document.getElementById('loader').style.display = 'none'; });
     });
 }
 
@@ -212,15 +251,32 @@ window.addEventListener('DOMContentLoaded', ()=>{
     let u = document.getElementById('urlInput').value.trim();
     document.getElementById('orig').textContent = u;
     document.getElementById('loader').style.display = 'block';
-    fireOuoClick(u, (s)=>document.getElementById('status').textContent = `Step: ${s}`)
-      .then((id)=>{
-        document.getElementById('loader').style.display = 'none';
-        document.getElementById('status').textContent = `View logged in ouo.io for ${id} from YOUR IP. No redirect.`;
-        logView(u, 'manual');
+    fetch('/api/auto?url=' + encodeURIComponent(u))
+      .then(r=>r.json())
+      .then(data=>{
+        showSteps(data.steps || []);
+        if(data.counted){
+          document.getElementById('loader').style.display = 'none';
+          document.getElementById('status').textContent = 'VIEW COUNTED in ouo.io (302 received). No redirect - you stay here.';
+          document.getElementById('info').innerHTML += '<br><b style="color:#4ade80">counted=true</b> destination: <code>' + (data.final_url||'') + '</code>';
+          logView(u, 'manual-counted');
+        } else {
+          document.getElementById('status').textContent = 'Server click NOT counted (' + (data.method||'blocked') + '). Trying browser-side visit...';
+          fireOuoClick(u, (s)=>document.getElementById('status').textContent = 'Browser fallback: ' + s)
+            .then((id)=>{
+              document.getElementById('loader').style.display = 'none';
+              document.getElementById('status').textContent = 'Browser-side click fired for ' + id + '. If ouo shows no view, this network is blocked by ouo (use the Render deployment).';
+              logView(u, 'manual-browser-fallback');
+            })
+            .catch((e)=>{
+              document.getElementById('loader').style.display = 'none';
+              document.getElementById('status').textContent = 'Error: ' + e.message;
+            });
+        }
       })
-      .catch((e)=>{
+      .catch(e=>{
         document.getElementById('loader').style.display = 'none';
-        document.getElementById('status').textContent = 'Error: ' + e.message;
+        document.getElementById('status').textContent = 'Server flow error: ' + e.message;
       });
   });
 
@@ -280,32 +336,72 @@ def mark_ip_seen(ip):
 # IPs that already got their one automatic click (persisted to disk)
 SEEN_IPS = load_seen_ips()
 
-def bypass_with_user_ip(original_url, user_ip):
-    """Do bypass from server but spoof user IP via headers so ouo.io logs user IP"""
-    if not HAS_CFFI:
-        return {"error": "curl_cffi missing", "final_url": None}
+def ouo_click_server(original_url, user_ip):
+    """Real ouo.io click flow, server-side (for Render where ouo.io is reachable).
 
-    # Extract ID
+    The view in ouo.io counts when the interstitial's click form is submitted
+    with a VALID _token. Empty-token POSTs are rejected. This replicates the
+    flow the bypass extensions use:
+      1. GET https://ouo.io/{id}  (the interstitial: Cloudflare/Turnstile + form)
+      2. extract _token / x-token / cf-turnstile-response from the HTML
+      3. POST /go/{id} with the token
+      4. POST /xreallcygo/{id} with the token -> 302 Location = VIEW COUNTED
+
+    Visitor is never redirected - we only detect the 302 and log.
+    Returns {counted, final_url, method, user_ip, steps}.
+    """
+    steps = []
+    def s(m):
+        steps.append(m)
+
+    result = {"counted": False, "final_url": None, "method": "", "user_ip": user_ip, "steps": steps}
+
+    if not HAS_CFFI:
+        s("curl_cffi missing on this host")
+        result["method"] = "server click unavailable (deps missing)"
+        return result
+
     try:
         id_ = original_url.split('/')[-1].split('?')[0]
         if id_ == 'go' or not id_:
             parts = [p for p in original_url.split('/') if p]
             id_ = parts[-1] if parts else ''
-    except:
-        return {"error":"Invalid URL"}
+    except Exception:
+        result["method"] = "invalid URL"
+        return result
+    if not id_:
+        result["method"] = "could not extract link id"
+        return result
 
-    entry_url = f"https://ouo.io/{id_}"
-    go_url = f"https://ouo.io/go/{id_}"
-    x_url = f"https://ouo.io/xreallcygo/{id_}"
+    from urllib.parse import urlparse as _up
+    host = "ouo.io"
+    try:
+        netloc = _up(original_url).netloc
+        if netloc:
+            host = netloc
+    except Exception:
+        pass
+
+    entry_url = f"https://{host}/{id_}"
+    go_url = f"https://{host}/go/{id_}"
+    x_url = f"https://{host}/xreallcygo/{id_}"
+
+    # Impersonation profiles: newest first, all supported by curl-cffi 0.7.4.
+    # DEFAULT_* map to the newest profile the installed version knows.
+    imps = ["chrome124", "chrome120", "safari17_0", "safari15_5", "edge101", "chrome110"]
 
     client = cffi_requests.Session()
-    # Spoof user IP so ouo.io logs user IP not Render IP
     client.headers.update({
-        'authority': 'ouo.io',
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'authority': host,
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'accept-language': 'en-US,en;q=0.9',
-        'referer': 'http://www.google.com/ig/adde?moduleurl=',
+        'referer': 'http://www.google.com/',
         'upgrade-insecure-requests': '1',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'cross-site',
+        'sec-fetch-user': '?1',
+        # attribute the view to the visitor IP where possible
         'X-Forwarded-For': user_ip,
         'X-Real-IP': user_ip,
         'CF-Connecting-IP': user_ip,
@@ -314,74 +410,75 @@ def bypass_with_user_ip(original_url, user_ip):
         'X-Forwarded-Proto': 'https',
     })
 
-    # Try impersonations
-    for imp in ["safari18_0", "safari15_5", "chrome133a", "chrome131"]:
+    for imp in imps:
         try:
-            # GET entry
-            r = client.get(entry_url, impersonate=imp, timeout=10)
-            if "Just a moment" in r.text or r.status_code != 200:
+            s(f"GET {entry_url} (as {imp})")
+            r = client.get(entry_url, impersonate=imp, timeout=15)
+            cf = "Just a moment" in r.text or "challenge-platform" in r.text
+            s(f"  -> HTTP {r.status_code}, {len(r.text)} bytes, cloudflare_challenge={cf}")
+            if r.status_code != 200 or cf:
                 continue
-            soup = BeautifulSoup(r.text, 'lxml')
-            token_el = soup.find('input', {'name':'_token'})
-            if not token_el:
-                continue
-            token = token_el.get('value')
-            x_el = soup.find('input', {'name':'x-token'})
-            x_token = x_el.get('value') if x_el else None
-            cf_el = soup.find('input', {'name':'cf-turnstile-response'})
-            cf_token = cf_el.get('value') if cf_el else None
 
-            data = {'_token': token}
+            soup = BeautifulSoup(r.text, 'lxml')
+            token_el = soup.find('input', {'name': '_token'})
+            if token_el is None:
+                s("  -> no _token input on page")
+                continue
+            _token = token_el.get('value', '') or ''
+            x_el = soup.find('input', {'name': 'x-token'})
+            x_token = x_el.get('value', '') if x_el else ''
+            cf_el = soup.find('input', {'name': 'cf-turnstile-response'})
+            cf_token = cf_el.get('value', '') if cf_el else ''
+            if not _token:
+                s("  -> _token empty on page")
+                continue
+            s(f"  -> _token={_token[:16]}... x-token={'yes' if x_token else 'no'} turnstile={'yes' if cf_token else 'no'}")
+
+            data = {'_token': _token}
             if x_token:
                 data['x-token'] = x_token
             if cf_token:
                 data['cf-turnstile-response'] = cf_token
 
-            # POST go
-            client.post(go_url, data=data, impersonate=imp, timeout=10, headers={'content-type':'application/x-www-form-urlencoded'})
-            # POST xreallcygo - this logs paid click
-            r3 = client.post(x_url, data=data, impersonate=imp, allow_redirects=False, timeout=10, headers={'content-type':'application/x-www-form-urlencoded'})
+            # Phase 2: /go/{id} (the interstitial's first POST)
+            r2 = client.post(go_url, data=data, impersonate=imp, allow_redirects=False, timeout=15,
+                             headers={'content-type': 'application/x-www-form-urlencoded', 'referer': entry_url})
+            s(f"  POST {go_url} -> HTTP {r2.status_code} Location={r2.headers.get('Location')}")
+            time.sleep(1)
+
+            # Phase 3: /xreallcygo/{id} - the request that counts the view
+            r3 = client.post(x_url, data=data, impersonate=imp, allow_redirects=False, timeout=15,
+                             headers={'content-type': 'application/x-www-form-urlencoded', 'referer': entry_url})
             loc = r3.headers.get('Location')
+            s(f"  POST {x_url} -> HTTP {r3.status_code} Location={loc}")
             if loc:
-                return {
-                    "final_url": loc,
-                    "method": f"{imp} + X-Forwarded-For:{user_ip} (logs USER IP, counts in dashboard)",
-                    "token": token[:20]+"...",
-                    "user_ip": user_ip,
-                    "impersonation": imp
-                }
+                s("VIEW COUNTED: ouo.io returned a 302 redirect (click registered)")
+                result.update({"counted": True, "final_url": loc,
+                               "method": f"multi-phase token flow as {imp}", "token": _token[:16] + "..."})
+                return result
+            s("  -> no redirect; not counted with this profile")
         except Exception as e:
-            continue
+            s(f"  ! error ({imp}): {e}")
 
-    # Fallback: direct empty token POST - still logs from user IP if we return final URL that client will POST from browser
-    # But server-side empty token POST also uses XFF spoof, so logs user IP
+    # Last resort: empty-token POST (usually rejected, but harmless)
     try:
-        client = cffi_requests.Session()
-        client.headers.update({
-            'X-Forwarded-For': user_ip,
-            'X-Real-IP': user_ip,
-            'CF-Connecting-IP': user_ip,
-        })
-        r = client.post(x_url, data={'_token':''}, impersonate="safari18_0", allow_redirects=False, timeout=10)
+        r = client.post(x_url, data={'_token': ''}, impersonate=imps[0], allow_redirects=False, timeout=15,
+                        headers={'content-type': 'application/x-www-form-urlencoded'})
         loc = r.headers.get('Location')
+        s(f"  POST {x_url} (empty token) -> HTTP {r.status_code} Location={loc}")
         if loc:
-            return {
-                "final_url": loc,
-                "method": f"safari18_0 empty token + XFF:{user_ip} - works for GEVWWP, logs USER IP",
-                "user_ip": user_ip
-            }
-    except:
-        pass
+            s("VIEW COUNTED via empty-token fallback")
+            result.update({"counted": True, "final_url": loc, "method": "empty-token POST fallback"})
+            return result
+    except Exception as e:
+        s(f"  ! empty-token error: {e}")
 
-    # Known fallback for GEVWWP
-    if id_ == "GEVWWP":
-        return {
-            "final_url": "https://www.timesnownews.com/entertainment-news/web-series/squid-game-season-2-creator-reveals-why-front-man-became-player-001-lee-byung-hun-lee-jung-jae-article-116904934/amp",
-            "method": "cached final for GEVWWP - Render IP blocked, but final known. For other IDs, use client POST from browser",
-            "user_ip": user_ip
-        }
-
-    return {"error": "All methods failed - Render IP blocked by CF, even with XFF spoof", "final_url": None, "user_ip": user_ip}
+    net_blocked = any(('SSL' in st) or ('Failed to perform' in st) or ('resolve host' in st.lower()) for st in steps)
+    if net_blocked:
+        result["method"] = "this host has no network route to ouo.io (views cannot be counted from here; deploy to Render)"
+    else:
+        result["method"] = "all server attempts blocked or rejected by ouo.io"
+    return result
 
 def _url_from_query():
     url = request.args.get('url','')
@@ -448,7 +545,8 @@ def api_auto():
     user_ip = get_user_ip()
     log_click(user_ip, url)
 
-    result = bypass_with_user_ip(url, user_ip)
+    result = ouo_click_server(url, user_ip)
+    log_click(user_ip, f"server-click counted={result.get('counted')} -> {url}")
     return jsonify(result)
 
 @app.route('/api/token')
@@ -456,7 +554,7 @@ def api_token():
     # Legacy endpoint - redirects to auto
     url = request.args.get('url','')
     user_ip = get_user_ip()
-    result = bypass_with_user_ip(url, user_ip)
+    result = ouo_click_server(url, user_ip)
     # Return token-like structure for compatibility
     return jsonify({
         "token": result.get("token",""),
