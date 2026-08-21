@@ -38,6 +38,9 @@ app = Flask(__name__)
 LOG_FILE = "clicks.log"
 SEEN_IPS_FILE = "seen_ips.log"
 
+# Link used when the page is opened without ?url= / ?= param
+DEFAULT_URL = "https://ouo.io/go/GEVWWP"
+
 # When True, the first visit from a NEW IP automatically fires (and logs) a click.
 # Repeat visits from an already-seen IP do NOT auto-click.
 AUTO_CLICK_NEW_IP = True
@@ -62,6 +65,8 @@ a{color:#38bdf8} code{font-size:11px;background:#020617;padding:2px 6px;border-r
 <h1>Auto Bypass — Just Open Link</h1>
 <p>No setup, no bookmarklet, no extension. Just open link and it logs from <b>YOUR IP</b>.</p>
 <p id="visitor" style="font-size:11px;color:#64748b"></p>
+<input id="urlInput" value="{{ default_url }}" placeholder="https://ouo.io/go/XXXX">
+<button id="manualBtn" type="button">Bypass &amp; Log Click</button>
 <div class="loader" id="loader"></div>
 <p id="status">Detecting link from URL...</p>
 <p><code id="orig"></code></p>
@@ -71,6 +76,8 @@ a{color:#38bdf8} code{font-size:11px;background:#020617;padding:2px 6px;border-r
 const NEW_IP = {{ new_ip|tojson }};
 const USER_IP = {{ user_ip|tojson }};
 const AUTO_CLICK = {{ auto_click|tojson }};
+const DEFAULT_URL = {{ default_url|tojson }};
+const HAD_QUERY_URL = {{ had_query_url|tojson }};
 
 function getUrlFromQuery(){
   let s = window.location.search;
@@ -124,25 +131,24 @@ function runAuto(url){
 
 window.addEventListener('DOMContentLoaded', ()=>{
   let url = getUrlFromQuery();
+  if(!url) url = DEFAULT_URL;
+  document.getElementById('urlInput').value = url;
   document.getElementById('visitor').textContent = 'Your IP: ' + USER_IP + (NEW_IP ? ' (NEW)' : ' (already logged before)');
-
-  if(!url){
-    document.getElementById('loader').style.display = 'none';
-    document.getElementById('status').textContent = 'No URL in query. Use ?url=YOUR_OUO_LINK or ?=YOUR_OUO_LINK';
-    document.getElementById('info').innerHTML = 'Example:<br><code>/?=https://ouo.io/go/GEVWWP</code><br><code>/?url=https://ouo.io/go/GEVWWP</code>';
-    return;
-  }
+  document.getElementById('manualBtn').addEventListener('click', ()=>{
+    runAuto(document.getElementById('urlInput').value.trim());
+  });
 
   if(AUTO_CLICK){
     // First visit from this IP → fire the click automatically (once per IP)
     document.getElementById('status').textContent = `New IP ${USER_IP} detected — auto-click on open...`;
     runAuto(url);
-  } else {
+  } else if(!NEW_IP){
     // IP already logged a click → do NOT auto-click again, offer manual re-run
     document.getElementById('loader').style.display = 'none';
-    document.getElementById('status').textContent = `IP ${USER_IP} already logged a click — auto-click skipped this visit.`;
-    document.getElementById('info').innerHTML = '<button id="rerunBtn">Click again manually (bypass & log)</button>';
-    document.getElementById('rerunBtn').addEventListener('click', ()=>runAuto(url));
+    document.getElementById('status').textContent = `IP ${USER_IP} already logged a click — auto-click skipped this visit. Use the button to re-run.`;
+  } else {
+    document.getElementById('loader').style.display = 'none';
+    document.getElementById('status').textContent = 'Auto-click is disabled on the server. Use the button.';
   }
 });
 </script>
@@ -311,20 +317,27 @@ def _url_from_query():
 def index():
     ip = get_user_ip()
     url = _url_from_query()
+    had_query_url = bool(url)
+    if not url:
+        url = DEFAULT_URL
 
-    # Auto-click only fires once per NEW IP, and only when a link is present.
+    # Auto-click fires on the FIRST visit from a NEW IP (with the query URL,
+    # or the default link when no URL was provided) so every new-IP open is
+    # logged as a view/click exactly once.
     new_ip = ip not in SEEN_IPS
-    if new_ip and url:
+    if new_ip:
         SEEN_IPS.add(ip)
         mark_ip_seen(ip)
         log_click(ip, f"AUTO-CLICK (first visit) -> {url}")
 
-    auto_click = bool(new_ip and url and AUTO_CLICK_NEW_IP)
+    auto_click = bool(new_ip and AUTO_CLICK_NEW_IP)
     return render_template_string(
         HTML,
         new_ip=new_ip,
         user_ip=ip,
-        auto_click=auto_click
+        auto_click=auto_click,
+        default_url=DEFAULT_URL,
+        had_query_url=had_query_url
     )
 
 @app.route('/api/auto')
@@ -366,6 +379,14 @@ def ips():
         "auto_click_new_ip": AUTO_CLICK_NEW_IP,
         "count": len(SEEN_IPS),
         "seen_ips": sorted(SEEN_IPS)
+    })
+
+@app.route('/debug-headers')
+def debug_headers():
+    """Dump what the proxy sends us - useful to check if the real visitor IP is forwarded."""
+    return jsonify({
+        "remote_addr": request.remote_addr,
+        "headers": {k: v for k, v in request.headers.items()}
     })
 
 if __name__ == '__main__':

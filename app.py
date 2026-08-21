@@ -373,6 +373,14 @@ def ips():
         "seen_ips": sorted(SEEN_IPS)
     })
 
+@app.route('/debug-headers')
+def debug_headers():
+    """Dump what the proxy sends us - useful to check if the real visitor IP is forwarded."""
+    return jsonify({
+        "remote_addr": request.remote_addr,
+        "headers": {k: v for k, v in request.headers.items()}
+    })
+
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
