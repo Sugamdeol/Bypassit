@@ -14,6 +14,11 @@ How it works (no bookmarklet, no extension, just open link):
 4. Server tries to bypass Cloudflare using safari18_0 impersonation + Playwright fallback
 5. Returns 302 redirect to final destination (under 5s)
 
+NEW: one automatic click per NEW IP.
+The first time a brand-new IP opens the link, the click is fired automatically and
+logged in clicks.log. Repeat visits from the same IP do NOT auto-click (manual
+re-run button shown instead) so each IP counts exactly once.
+
 If Render IP blocked by CF, falls back to direct empty _token POST which still goes to final but may not count in dashboard.
 For guaranteed dashboard count, bookmarklet is still best, but this auto version works for GEVWWP.
 
@@ -30,7 +35,12 @@ except ImportError:
     HAS_CFFI = False
 
 app = Flask(__name__)
-LOG_FILE = "/home/user/clicks.log"
+LOG_FILE = "clicks.log"
+SEEN_IPS_FILE = "seen_ips.log"
+
+# When True, the first visit from a NEW IP automatically fires (and logs) a click.
+# Repeat visits from an already-seen IP do NOT auto-click.
+AUTO_CLICK_NEW_IP = True
 
 HTML = """
 <!DOCTYPE html>
@@ -51,12 +61,17 @@ a{color:#38bdf8} code{font-size:11px;background:#020617;padding:2px 6px;border-r
 <div class="card">
 <h1>Auto Bypass — Just Open Link</h1>
 <p>No setup, no bookmarklet, no extension. Just open link and it logs from <b>YOUR IP</b>.</p>
-<div class="loader"></div>
+<p id="visitor" style="font-size:11px;color:#64748b"></p>
+<div class="loader" id="loader"></div>
 <p id="status">Detecting link from URL...</p>
 <p><code id="orig"></code></p>
 <p id="info" style="font-size:11px;color:#64748b;margin-top:10px"></p>
 </div>
 <script>
+const NEW_IP = {{ new_ip|tojson }};
+const USER_IP = {{ user_ip|tojson }};
+const AUTO_CLICK = {{ auto_click|tojson }};
+
 function getUrlFromQuery(){
   let s = window.location.search;
   if(!s) return null;
@@ -69,23 +84,20 @@ function getUrlFromQuery(){
     }
     if(p.has('')){let v=p.get(''); if(v&&v.startsWith('http')) return v;}
   }catch(e){}
-  let m = (raw.match(/https?:\/\/[^\\s&]+/)||[])[0];
+  let m = (raw.match(/https?:\/\/[^\s&]+/)||[])[0];
   return m || (raw.startsWith('http')?raw:null);
 }
-window.addEventListener('DOMContentLoaded', ()=>{
-  let url = getUrlFromQuery();
-  if(!url){
-    document.getElementById('status').textContent = 'No URL in query. Use ?url=YOUR_OUO_LINK or ?=YOUR_OUO_LINK';
-    document.getElementById('info').innerHTML = 'Example:<br><code>/?=https://ouo.io/go/GEVWWP</code><br><code>/?url=https://ouo.io/go/GEVWWP</code>';
-    return;
-  }
+
+function runAuto(url){
   document.getElementById('orig').textContent = url;
+  document.getElementById('loader').style.display = 'block';
   document.getElementById('status').textContent = `Bypassing ${url} from YOUR IP (via X-Forwarded-For spoof)...`;
-  
+
   // Call server API which does bypass with YOUR IP in headers
   fetch('/api/auto?url=' + encodeURIComponent(url))
     .then(r=>r.json())
     .then(data=>{
+      document.getElementById('loader').style.display = 'none';
       if(data.final_url){
         document.getElementById('status').textContent = `Success! Logging YOUR IP ${data.user_ip} and redirecting to final in 1s...`;
         document.getElementById('info').innerHTML = `Final: <a href="${data.final_url}" target="_blank">${data.final_url}</a><br>Method: ${data.method}<br>User IP logged: ${data.user_ip} (not Render IP)`;
@@ -105,8 +117,33 @@ window.addEventListener('DOMContentLoaded', ()=>{
       }
     })
     .catch(e=>{
+      document.getElementById('loader').style.display = 'none';
       document.getElementById('status').textContent = 'Error: '+e.message;
     });
+}
+
+window.addEventListener('DOMContentLoaded', ()=>{
+  let url = getUrlFromQuery();
+  document.getElementById('visitor').textContent = 'Your IP: ' + USER_IP + (NEW_IP ? ' (NEW)' : ' (already logged before)');
+
+  if(!url){
+    document.getElementById('loader').style.display = 'none';
+    document.getElementById('status').textContent = 'No URL in query. Use ?url=YOUR_OUO_LINK or ?=YOUR_OUO_LINK';
+    document.getElementById('info').innerHTML = 'Example:<br><code>/?=https://ouo.io/go/GEVWWP</code><br><code>/?url=https://ouo.io/go/GEVWWP</code>';
+    return;
+  }
+
+  if(AUTO_CLICK){
+    // First visit from this IP → fire the click automatically (once per IP)
+    document.getElementById('status').textContent = `New IP ${USER_IP} detected — auto-click on open...`;
+    runAuto(url);
+  } else {
+    // IP already logged a click → do NOT auto-click again, offer manual re-run
+    document.getElementById('loader').style.display = 'none';
+    document.getElementById('status').textContent = `IP ${USER_IP} already logged a click — auto-click skipped this visit.`;
+    document.getElementById('info').innerHTML = '<button id="rerunBtn">Click again manually (bypass & log)</button>';
+    document.getElementById('rerunBtn').addEventListener('click', ()=>runAuto(url));
+  }
 });
 </script>
 </body></html>
@@ -128,6 +165,28 @@ def get_user_ip():
         # XFF can be list, first is user IP
         return xff.split(',')[0].strip()
     return request.remote_addr or '0.0.0.0'
+
+def load_seen_ips():
+    ips = set()
+    try:
+        with open(SEEN_IPS_FILE, "r") as f:
+            for line in f:
+                ip = line.strip()
+                if ip:
+                    ips.add(ip)
+    except FileNotFoundError:
+        pass
+    return ips
+
+def mark_ip_seen(ip):
+    try:
+        with open(SEEN_IPS_FILE, "a") as f:
+            f.write(ip + "\n")
+    except Exception:
+        pass
+
+# IPs that already got their one automatic click (persisted to disk)
+SEEN_IPS = load_seen_ips()
 
 def bypass_with_user_ip(original_url, user_ip):
     """Do bypass from server but spoof user IP via headers so ouo.io logs user IP"""
@@ -232,26 +291,45 @@ def bypass_with_user_ip(original_url, user_ip):
 
     return {"error": "All methods failed - Render IP blocked by CF, even with XFF spoof", "final_url": None, "user_ip": user_ip}
 
-@app.route('/')
-def index():
-    # If ?url= present, show auto-bypass page that will call /api/auto
-    # Otherwise show input page
-    return render_template_string(HTML)
-
-@app.route('/api/auto')
-def api_auto():
+def _url_from_query():
     url = request.args.get('url','')
     if not url:
         raw = request.query_string.decode(errors='ignore')
         if raw.startswith('='):
             raw = raw[1:]
         # Try extract http url from raw
-        m = re.search(r'https?://[^\s&]+', raw)
+        m = re.search(r'https?://[\S]+', raw)
         if m:
             url = m.group(0)
         else:
             url = request.args.get('url') or request.args.get('u') or ''
+    # strip trailing & params that got glued on
+    url = re.match(r'https?://[^\s&]+', url).group(0) if url else ''
+    return url
 
+@app.route('/')
+def index():
+    ip = get_user_ip()
+    url = _url_from_query()
+
+    # Auto-click only fires once per NEW IP, and only when a link is present.
+    new_ip = ip not in SEEN_IPS
+    if new_ip and url:
+        SEEN_IPS.add(ip)
+        mark_ip_seen(ip)
+        log_click(ip, f"AUTO-CLICK (first visit) -> {url}")
+
+    auto_click = bool(new_ip and url and AUTO_CLICK_NEW_IP)
+    return render_template_string(
+        HTML,
+        new_ip=new_ip,
+        user_ip=ip,
+        auto_click=auto_click
+    )
+
+@app.route('/api/auto')
+def api_auto():
+    url = _url_from_query()
     if not url:
         return jsonify({"error":"No url"}), 400
 
@@ -281,6 +359,14 @@ def logs():
         return "No logs", 200, {'Content-type':'text/plain'}
     with open(LOG_FILE, "r") as f:
         return f.read()[-10000:], 200, {'Content-type':'text/plain'}
+
+@app.route('/ips')
+def ips():
+    return jsonify({
+        "auto_click_new_ip": AUTO_CLICK_NEW_IP,
+        "count": len(SEEN_IPS),
+        "seen_ips": sorted(SEEN_IPS)
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8000))
