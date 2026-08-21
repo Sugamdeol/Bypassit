@@ -1,26 +1,20 @@
 """
-FINAL AUTO BYPASS - No setup, just open link, logs from USER IP, counts in dashboard
+FINAL AUTO BYPASS - Just open link, logs a VIEW in ouo.io from USER IP. NO REDIRECT.
 Single file for Render free tier
 
 How it works (no bookmarklet, no extension, just open link):
 1. User opens https://bypassit-1.onrender.com/?url=https://ouo.io/go/GEVWWP
    or https://bypassit-1.onrender.com/?=https://ouo.io/go/GEVWWP
-2. Server gets USER IP from X-Forwarded-For header (Render sets it)
-3. Server does bypass using curl_cffi BUT sets headers:
-   X-Forwarded-For: USER_IP
-   X-Real-IP: USER_IP
-   CF-Connecting-IP: USER_IP
-   → ouo.io logs USER IP, not Render IP (if ouo.io respects these headers)
-4. Server tries to bypass Cloudflare using safari18_0 impersonation + Playwright fallback
-5. Returns 302 redirect to final destination (under 5s)
+   or just the bare site (uses the default link).
+2. On the first visit from a NEW IP, the page fires the ouo.io click directly
+   from the visitor's browser (hidden iframe POST to ouo.io/xreallcygo/ID) so
+   ouo.io sees the visitor's real IP and counts the view in its dashboard.
+3. The view is logged to clicks.log. The page does NOT redirect anywhere.
 
 NEW: one automatic click per NEW IP.
 The first time a brand-new IP opens the link, the click is fired automatically and
 logged in clicks.log. Repeat visits from the same IP do NOT auto-click (manual
-re-run button shown instead) so each IP counts exactly once.
-
-If Render IP blocked by CF, falls back to direct empty _token POST which still goes to final but may not count in dashboard.
-For guaranteed dashboard count, bookmarklet is still best, but this auto version works for GEVWWP.
+log button shown instead) so each IP counts exactly once.
 
 Deploy: render.yaml already points to render_client_ip_bypass_fixed.py, change to this file or rename to that
 """
@@ -66,7 +60,7 @@ a{color:#38bdf8} code{font-size:11px;background:#020617;padding:2px 6px;border-r
 <p>No setup, no bookmarklet, no extension. Just open link and it logs from <b>YOUR IP</b>.</p>
 <p id="visitor" style="font-size:11px;color:#64748b"></p>
 <input id="urlInput" value="{{ default_url }}" placeholder="https://ouo.io/go/XXXX">
-<button id="manualBtn" type="button">Bypass &amp; Log Click</button>
+<button id="manualBtn" type="button">Log View (No Redirect)</button>
 <div class="loader" id="loader"></div>
 <p id="status">Detecting link from URL...</p>
 <p><code id="orig"></code></p>
@@ -95,37 +89,62 @@ function getUrlFromQuery(){
   return m || (raw.startsWith('http')?raw:null);
 }
 
+function extractId(url){
+  try{
+    let clean = url.split('?')[0].split('#')[0];
+    let parts = clean.split('/').filter(Boolean);
+    let id = parts[parts.length-1];
+    if(id==='go') id = parts[parts.length-2]||'';
+    return id;
+  }catch(e){ return null; }
+}
+
+// Fire the ouo.io click FROM THE VISITOR'S OWN BROWSER (their IP) via a
+// hidden iframe. This is the request ouo.io counts in its dashboard.
+// No page navigation happens - the view is just logged.
+function fireOuoClick(url){
+  return new Promise((resolve, reject)=>{
+    let id = extractId(url);
+    if(!id){ return reject(new Error('Could not extract ouo ID from ' + url)); }
+    let iframe = document.createElement('iframe');
+    iframe.name = 'ouoclick';
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    let form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `https://ouo.io/xreallcygo/${id}`;
+    form.target = 'ouoclick';
+    form.innerHTML = '<input type="hidden" name="_token" value="">';
+    document.body.appendChild(form);
+    form.submit();
+    // ouo.io responds with a 302 inside the iframe - we never navigate the page
+    setTimeout(()=>resolve(id), 2500);
+    setTimeout(()=>{ iframe.remove(); form.remove(); }, 4000);
+  });
+}
+
+// Just log the view on our server - NO redirect, NO bypass navigation.
+function logView(url, reason){
+  fetch('/api/log', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url: url, reason: reason})
+  }).catch(()=>{});
+}
+
 function runAuto(url){
   document.getElementById('orig').textContent = url;
-  document.getElementById('loader').style.display = 'block';
-  document.getElementById('status').textContent = `Bypassing ${url} from YOUR IP (via X-Forwarded-For spoof)...`;
-
-  // Call server API which does bypass with YOUR IP in headers
-  fetch('/api/auto?url=' + encodeURIComponent(url))
-    .then(r=>r.json())
-    .then(data=>{
+  document.getElementById('status').textContent = `Logging view for ${url} from YOUR IP (${USER_IP})...`;
+  fireOuoClick(url)
+    .then((id)=>{
       document.getElementById('loader').style.display = 'none';
-      if(data.final_url){
-        document.getElementById('status').textContent = `Success! Logging YOUR IP ${data.user_ip} and redirecting to final in 1s...`;
-        document.getElementById('info').innerHTML = `Final: <a href="${data.final_url}" target="_blank">${data.final_url}</a><br>Method: ${data.method}<br>User IP logged: ${data.user_ip} (not Render IP)`;
-        setTimeout(()=>{ window.location.href = data.final_url; }, 1000);
-      }else{
-        document.getElementById('status').textContent = 'Server bypass failed (Render IP blocked by CF), trying direct client bypass from YOUR IP...';
-        // Fallback: direct POST with empty token from YOUR IP (works for GEVWWP, <2s, logs YOUR IP)
-        let id = url.split('/').pop().split('?')[0];
-        if(id==='go'){ id = url.split('/').filter(Boolean).pop(); }
-        // Direct form POST from YOUR browser to xreallcygo
-        let form = document.createElement('form');
-        form.method='POST';
-        form.action=`https://ouo.io/xreallcygo/${id}`;
-        form.innerHTML='<input type="hidden" name="_token" value="">';
-        document.body.appendChild(form);
-        setTimeout(()=>form.submit(), 600);
-      }
+      document.getElementById('status').textContent = `View logged in ouo.io for link ${id} from YOUR IP. No redirect.`;
+      document.getElementById('info').textContent = `Click sent to ouo.io/xreallcygo/${id} from your browser (your IP). Your view is logged - you were not redirected anywhere.`;
+      logView(url, 'auto');
     })
-    .catch(e=>{
+    .catch((e)=>{
       document.getElementById('loader').style.display = 'none';
-      document.getElementById('status').textContent = 'Error: '+e.message;
+      document.getElementById('status').textContent = 'Error: ' + e.message;
     });
 }
 
@@ -135,17 +154,28 @@ window.addEventListener('DOMContentLoaded', ()=>{
   document.getElementById('urlInput').value = url;
   document.getElementById('visitor').textContent = 'Your IP: ' + USER_IP + (NEW_IP ? ' (NEW)' : ' (already logged before)');
   document.getElementById('manualBtn').addEventListener('click', ()=>{
-    runAuto(document.getElementById('urlInput').value.trim());
+    let u = document.getElementById('urlInput').value.trim();
+    document.getElementById('loader').style.display = 'block';
+    fireOuoClick(u)
+      .then((id)=>{
+        document.getElementById('loader').style.display = 'none';
+        document.getElementById('status').textContent = `View logged in ouo.io for ${id} from YOUR IP. No redirect.`;
+        logView(u, 'manual');
+      })
+      .catch((e)=>{
+        document.getElementById('loader').style.display = 'none';
+        document.getElementById('status').textContent = 'Error: ' + e.message;
+      });
   });
 
   if(AUTO_CLICK){
     // First visit from this IP → fire the click automatically (once per IP)
-    document.getElementById('status').textContent = `New IP ${USER_IP} detected — auto-click on open...`;
+    document.getElementById('status').textContent = `New IP ${USER_IP} detected — logging view automatically...`;
     runAuto(url);
   } else if(!NEW_IP){
     // IP already logged a click → do NOT auto-click again, offer manual re-run
     document.getElementById('loader').style.display = 'none';
-    document.getElementById('status').textContent = `IP ${USER_IP} already logged a click — auto-click skipped this visit. Use the button to re-run.`;
+    document.getElementById('status').textContent = `IP ${USER_IP} already logged a click — auto-click skipped this visit. Use the button to log again.`;
   } else {
     document.getElementById('loader').style.display = 'none';
     document.getElementById('status').textContent = 'Auto-click is disabled on the server. Use the button.';
@@ -339,6 +369,19 @@ def index():
         default_url=DEFAULT_URL,
         had_query_url=had_query_url
     )
+
+@app.route('/api/log', methods=['POST'])
+def api_log():
+    """Just log the view/click - no bypass, no redirect."""
+    data = request.get_json(silent=True) or {}
+    url = data.get('url', '')
+    reason = data.get('reason', '')
+    user_ip = get_user_ip()
+    if reason:
+        log_click(user_ip, f"{reason} -> {url}")
+    else:
+        log_click(user_ip, url)
+    return jsonify({"ok": True, "ip": user_ip, "url": url, "reason": reason})
 
 @app.route('/api/auto')
 def api_auto():
