@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+clicks.log
+seen_ips.log
+.venv/

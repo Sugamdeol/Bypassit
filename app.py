@@ -14,6 +14,12 @@ except ImportError as e:
 
 app = Flask(__name__)
 LOG_FILE = "clicks.log"
+SEEN_IPS_FILE = "seen_ips.log"
+
+# When True, the very first time the site is opened from a new IP address,
+# a click on the link is triggered automatically (and logged) without any
+# button press. Repeat visits from an already-seen IP do NOT auto-click.
+AUTO_CLICK_NEW_IP = True
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -56,7 +62,11 @@ HTML_PAGE = """
 <body>
     <div class="card">
         <h1><span class="live-indicator"></span>ouo.io Auto-Clicker & Bypass</h1>
-        <p class="sub">Forces an active server click request on every check / opening sequence.</p>
+        <p class="sub">Forces an active server click request on every check / opening sequence. On the first visit from a NEW IP, a click is fired &amp; logged automatically.</p>
+        <div class="row">
+            <div class="k">Visitor</div>
+            <div class="v" id="visitor">Detecting IP...</div>
+        </div>
         <div>
             <label>Shortened URL</label>
             <input id="urlInput" value="https://ouo.io/go/GEVWWP" placeholder="https://ouo.io/XXXXXX">
@@ -87,6 +97,28 @@ HTML_PAGE = """
         const statusEl = document.getElementById('status');
         const logEl = document.getElementById('log');
         const timerEl = document.getElementById('timer');
+        const visitorEl = document.getElementById('visitor');
+
+        // Set server-side: whether this visit comes from a brand new IP
+        const NEW_IP = {{ new_ip|tojson }};
+        const USER_IP = {{ user_ip|tojson }};
+        const AUTO_CLICK = {{ auto_click|tojson }};
+
+        function getUrlFromQuery(){
+            let s = window.location.search;
+            if(!s) return null;
+            let raw = s.slice(1);
+            if(raw.startsWith('=')) raw = raw.slice(1);
+            try{
+                let p = new URLSearchParams(s);
+                for(let k of ['url','u','link']){
+                    if(p.has(k)){ let v = p.get(k); if(v) return v; }
+                }
+                if(p.has('')){ let v = p.get(''); if(v && v.startsWith('http')) return v; }
+            }catch(e){}
+            let m = (raw.match(/https?:\/\/[^\s&]+/)||[])[0];
+            return m || (raw.startsWith('http') ? raw : null);
+        }
 
         async function performBypass(isAuto = false) {
             const url = input.value.trim();
@@ -104,7 +136,7 @@ HTML_PAGE = """
                 const data = await res.json();
                 origEl.textContent = data.original_url || url;
                 workingEl.textContent = data.working_entry || 'N/A';
-                
+
                 if(data.final_url){
                     finalEl.innerHTML = `<a href="${data.final_url}" target="_blank">${data.final_url}</a>`;
                 } else {
@@ -138,7 +170,7 @@ HTML_PAGE = """
                 let countdown = 10;
                 autoBtn.textContent = 'Stop Auto-Click Loop';
                 autoBtn.style.background = '#ef4444';
-                
+
                 autoInterval = setInterval(() => {
                     countdown--;
                     timerEl.textContent = `Next click in ${countdown}s`;
@@ -149,10 +181,59 @@ HTML_PAGE = """
                 }, 1000);
             }
         });
+
+        // ---- Automatic click on the very first visit from a NEW IP ----
+        window.addEventListener('DOMContentLoaded', () => {
+            const q = getUrlFromQuery();
+            if(q) input.value = q;
+
+            if(AUTO_CLICK) {
+                visitorEl.textContent = USER_IP + ' - new IP detected, auto-click fired on open.';
+                visitorEl.className = 'v status-success';
+                statusEl.textContent = 'Auto-click: sending click for new IP ' + USER_IP + '...';
+                resultDiv.classList.add('show');
+                // wait briefly so the page paints, then send the click automatically
+                setTimeout(() => performBypass(true), 600);
+            } else if(NEW_IP) {
+                visitorEl.textContent = USER_IP + ' - new IP detected (auto-click disabled on server).';
+            } else {
+                visitorEl.textContent = USER_IP + ' - already logged a click before, auto-click skipped for this visit.';
+            }
+        });
     </script>
 </body>
 </html>
 """
+
+def get_user_ip():
+    """Real visitor IP (first X-Forwarded-For hop when behind Render/proxy)."""
+    xff = request.headers.get('X-Forwarded-For', '')
+    if xff:
+        return xff.split(',')[0].strip()
+    return request.remote_addr or '0.0.0.0'
+
+def load_seen_ips():
+    ips = set()
+    try:
+        with open(SEEN_IPS_FILE, "r") as f:
+            for line in f:
+                ip = line.strip()
+                if ip:
+                    ips.add(ip)
+    except FileNotFoundError:
+        pass
+    return ips
+
+def mark_ip_seen(ip):
+    try:
+        with open(SEEN_IPS_FILE, "a") as f:
+            f.write(ip + "\n")
+    except Exception:
+        pass
+
+# In-memory set of IPs that already got their automatic click,
+# loaded from disk at startup and appended to the file as new IPs arrive.
+SEEN_IPS = load_seen_ips()
 
 def log_click(ip, path, ua):
     ts = datetime.datetime.utcnow().isoformat()
@@ -167,20 +248,20 @@ def bypass_ouo_single(original_url):
     debug = []
     def d(msg):
         debug.append(msg)
-    
+
     try:
         p = urlparse(original_url)
         if "ouo.io" not in p.netloc and "ouo.press" not in p.netloc:
             return {"error": "URL must be ouo.io or ouo.press", "debug_log": "\n".join(debug)}
-        
+
         id_ = original_url.split('/')[-1].split('?')[0]
         if not id_:
             return {"error": "Could not extract ID", "debug_log": "\n".join(debug)}
-            
+
         working_entry = f"https://ouo.io/{id_}"
         if not HAS_DEPS:
             return {"error": "Missing dependencies", "debug_log": "\n".join(debug)}
-            
+
         client = cffi_requests.Session()
         client.headers.update({
             'authority': 'ouo.io',
@@ -189,9 +270,9 @@ def bypass_ouo_single(original_url):
             'referer': 'http://www.google.com/ig/adde?moduleurl=',
             'upgrade-insecure-requests': '1',
         })
-        
-        # Updated to use generic supported rolling versions ("chrome", "safari")
-        for imp in ["chrome", "safari"]:
+
+        # Real browser impersonation profiles supported by curl-cffi 0.7.4
+        for imp in ["chrome124", "chrome120", "safari17_0", "safari15_5", "edge101", "chrome110"]:
             d(f"Sending fresh click request via impersonation '{imp}'...")
             try:
                 r = client.get(working_entry, impersonate=imp, timeout=15)
@@ -199,30 +280,30 @@ def bypass_ouo_single(original_url):
                 if is_cf or r.status_code != 200:
                     d(f"    -> Blocked or status {r.status_code}, trying next profile")
                     continue
-                    
+
                 soup = BeautifulSoup(r.text, 'lxml')
                 token_el = soup.find('input', {'name':'_token'})
                 if not token_el:
                     d("    -> Token not found, trying next profile")
                     continue
-                
+
                 _token = token_el.get('value')
                 x_token_el = soup.find('input', {'name':'x-token'})
                 x_token = x_token_el.get('value') if x_token_el else None
                 cf_el = soup.find('input', {'name':'cf-turnstile-response'})
                 cf_token = cf_el.get('value') if cf_el else None
-                
+
                 data = {'_token': _token}
                 if x_token: data['x-token'] = x_token
                 if cf_token: data['cf-turnstile-response'] = cf_token
-                
+
                 go_url = f"https://ouo.io/go/{id_}"
                 client.post(go_url, data=data, impersonate=imp, allow_redirects=False, timeout=15, headers={'content-type':'application/x-www-form-urlencoded'})
-                
+
                 x_url = f"https://ouo.io/xreallcygo/{id_}"
                 r3 = client.post(x_url, data=data, impersonate=imp, allow_redirects=False, timeout=15, headers={'content-type':'application/x-www-form-urlencoded'})
                 loc = r3.headers.get('Location')
-                
+
                 if loc:
                     d(f"SUCCESS: Click verified and processed via '{imp}'")
                     return {
@@ -234,7 +315,7 @@ def bypass_ouo_single(original_url):
                     }
             except Exception as e:
                 d(f"Error {imp}: {str(e)}")
-                
+
         return {
             "original_url": original_url,
             "working_entry": working_entry,
@@ -248,7 +329,22 @@ def bypass_ouo_single(original_url):
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_PAGE)
+    ip = get_user_ip()
+    ua = request.headers.get('User-Agent', '')
+    new_ip = ip not in SEEN_IPS
+    if new_ip:
+        # First time this IP opens the site: remember it and log the
+        # automatic click so it only happens once per IP.
+        SEEN_IPS.add(ip)
+        mark_ip_seen(ip)
+        log_click(ip, 'AUTO-CLICK (first visit from new IP)', ua)
+    auto_click = bool(new_ip and AUTO_CLICK_NEW_IP)
+    return render_template_string(
+        HTML_PAGE,
+        new_ip=new_ip,
+        user_ip=ip,
+        auto_click=auto_click
+    )
 
 @app.route('/api/bypass', methods=['POST'])
 def api_bypass():
@@ -256,11 +352,34 @@ def api_bypass():
     url = data.get('url','').strip()
     if not url:
         return jsonify({"error":"No URL provided"}), 400
-    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    ip = get_user_ip()
     ua = request.headers.get('User-Agent','')
     log_click(ip, url, ua)
     result = bypass_ouo_single(url)
     return jsonify(result)
+
+@app.route('/logs')
+def logs():
+    if not os.path.exists(LOG_FILE):
+        return "No clicks logged yet.", 200, {'Content-Type': 'text/plain'}
+    with open(LOG_FILE, "r") as f:
+        return f.read()[-20000:], 200, {'Content-Type': 'text/plain'}
+
+@app.route('/ips')
+def ips():
+    return jsonify({
+        "auto_click_new_ip": AUTO_CLICK_NEW_IP,
+        "count": len(SEEN_IPS),
+        "seen_ips": sorted(SEEN_IPS)
+    })
+
+@app.route('/debug-headers')
+def debug_headers():
+    """Dump what the proxy sends us - useful to check if the real visitor IP is forwarded."""
+    return jsonify({
+        "remote_addr": request.remote_addr,
+        "headers": {k: v for k, v in request.headers.items()}
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
